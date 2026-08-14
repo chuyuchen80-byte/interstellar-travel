@@ -1,0 +1,21 @@
+{
+  "name": "space-shooter-proto",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "像素太空 6DOF 飞行射击技术原型 (Three.js + Vite + TypeScript)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.7",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

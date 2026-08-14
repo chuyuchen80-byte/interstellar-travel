@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>像素太空 · 6DOF 飞行射击原型</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #050510; overscroll-behavior: none; }
+      #app { position: fixed; inset: 0; }
+      #app canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; user-select: none; -webkit-user-select: none; }
+      .hud { position: fixed; font-family: "Cascadia Mono", Consolas, monospace; color: #c8f7c5; pointer-events: none; z-index: 10; }
+      #hudTop { top: 14px; left: 16px; text-shadow: 0 0 6px #000; line-height: 1.8; font-size: 15px; }
+      #hpBar { width: 220px; height: 10px; border: 1px solid #5f9ea0; background: #1a1a2e; margin-top: 4px; }
+      #hpFill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff4d4d, #ffb347); transition: width 0.15s; }
+      #hudBottom { bottom: 14px; left: 16px; font-size: 13px; opacity: 0.85; text-shadow: 0 0 4px #000; }
+      #styleTag { position: fixed; top: 14px; right: 16px; font-family: Consolas, monospace; font-size: 13px; color: #ffd479; z-index: 10; pointer-events: none; text-shadow: 0 0 4px #000; }
+      #collectWrap { position: fixed; top: 42px; right: 16px; font-family: Consolas, monospace; font-size: 14px; color: #7df9ff; z-index: 10; pointer-events: none; text-shadow: 0 0 4px #000; }
+      .prompt { position: fixed; left: 50%; bottom: 22%; transform: translateX(-50%); font-family: "Cascadia Mono", Consolas, monospace; font-size: 21px; letter-spacing: 3px; color: #ffd479; text-shadow: 0 0 10px #000; z-index: 15; pointer-events: none; animation: pulse 1.2s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+      #surfaceHelp { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); font-family: Consolas, monospace; font-size: 13px; color: #e8f6ff; opacity: 0.9; text-shadow: 0 0 4px #000; z-index: 10; pointer-events: none; white-space: nowrap; }
+      #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.5s ease; z-index: 30; }
+      #landMsg { position: fixed; left: 50%; top: 46%; transform: translate(-50%, -50%); font-family: "Cascadia Mono", Consolas, monospace; font-size: 26px; letter-spacing: 10px; color: #e8f6ff; text-shadow: 0 0 18px #000, 0 0 4px #000; z-index: 35; pointer-events: none; }
+      .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(4, 6, 16, 0.72); font-family: "Cascadia Mono", Consolas, monospace; color: #d8ffe0; text-align: center; z-index: 20; }
+      .overlay h1 { font-size: 34px; letter-spacing: 6px; margin-bottom: 10px; color: #8dffb0; text-shadow: 0 0 14px #2ecc71; }
+      .overlay .sub { color: #9fb8c9; margin-bottom: 26px; }
+      .overlay .keys { font-size: 14px; line-height: 2.1; }
+      .overlay .keys b { color: #ffd479; }
+      .overlay .btn { margin-top: 28px; padding: 10px 26px; border: 1px solid #2ecc71; color: #2ecc71; font-size: 16px; letter-spacing: 2px; cursor: pointer; background: transparent; }
+      .overlay .btn:hover { background: rgba(46, 204, 113, 0.15); }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hudTop" class="hud">
+      <div>生命 <span id="hpVal">100</span></div>
+      <div id="hpBar"><div id="hpFill"></div></div>
+      <div>得分 <span id="scoreVal">0</span> &nbsp;·&nbsp; 波次 <span id="waveVal">1</span></div>
+    </div>
+    <div id="styleTag">风格: <span id="styleName">经典像素</span>（按 1/2/3/4 切换）</div>
+    <div id="collectWrap" class="hidden">水晶 <span id="collectVal">0</span></div>
+    <div id="hudBottom" class="hud">WASD 平移 · 鼠标转向 · Q/E 翻滚 · Space/C 上/下 · Shift 加速 · 左键射击</div>
+    <div id="surfaceHelp" class="hidden">WASD 移动 · 鼠标视角 · Space 跳跃 · F 交互（飞船/水晶）</div>
+    <div id="landPrompt" class="prompt hidden">按 F 降落</div>
+    <div id="shipPrompt" class="prompt hidden">按 F 返回飞船</div>
+    <div id="fade"></div>
+    <div id="landMsg" class="hidden"></div>
+    <div id="menu" class="overlay">
+      <h1>像 素 太 空</h1>
+      <div class="sub">太阳系 · 太空探索 · 第三人称 · 技术原型 v0.3 · Three.js</div>
+      <div class="keys">
+        <b>鼠标</b> 瞄准（点击锁定指针）<br>
+        <b>W/S</b> 前进/后退 &nbsp;·&nbsp; <b>A/D</b> 左/右平移<br>
+        <b>Q/E</b> 翻滚 &nbsp;·&nbsp; <b>Space/C</b> 上升/下降 &nbsp;·&nbsp; <b>Shift</b> 加速<br>
+        <b>左键</b> 射击 &nbsp;·&nbsp; <b>1/2/3/4</b> 切换像素风格<br>
+        <b>飞向地球</b>（前方蓝色星球），靠近后按 <b>F</b> 自动降落 → 下船探索（收集水晶）→ 靠近飞船按 <b>F</b> 返回<br>
+        <b>Esc</b> 释放鼠标（暂停/取消降落） &nbsp;·&nbsp; <b>R</b> 重生
+      </div>
+      <button class="btn" id="startBtn">点 击 开 始</button>
+    </div>
+    <div id="over" class="overlay hidden">
+      <h1>战机被击毁</h1>
+      <div class="keys">得分 <span id="finalScore">0</span><br><br>按 <b>R</b> 重新开始</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
