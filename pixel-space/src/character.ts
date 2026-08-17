@@ -119,15 +119,14 @@ export class CharacterController {
     camera: THREE.PerspectiveCamera,
     enterTime: number,
   ) {
-    // 鼠标视角
+    // 鼠标视角 — 只控制相机，不直接旋转角色
     const { dx, dy } = ctrl.consumeMouse();
     this.yaw -= dx * 0.0024;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * 0.0024, -0.2, 1.2);
-    this.group.rotation.y = this.yaw;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * 0.0024, 0.15, 1.35);
 
-    // 移动（相对朝向，相机在背后）
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.group.quaternion);
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.group.quaternion);
+    // ---- 移动方向：WASD 相对于相机水平朝向（yaw） ----
+    const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     const want = new THREE.Vector3();
     if (ctrl.isDown('KeyW')) want.add(fwd);
     if (ctrl.isDown('KeyS')) want.sub(fwd);
@@ -158,6 +157,15 @@ export class CharacterController {
 
     this.group.position.copy(this.pos);
 
+    // ---- 角色朝向：平滑旋转到移动方向（Minecraft 风格） ----
+    if (hasInput) {
+      const moveYaw = Math.atan2(want.x, want.z);
+      let diff = moveYaw - this.group.rotation.y;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      this.group.rotation.y += diff * Math.min(1, dt * 10);
+    }
+
     // 行走动画（关节枢轴摆动）
     this.moving = hasInput && this.onGround;
     if (this.moving) this.walk += dt * 9;
@@ -169,22 +177,26 @@ export class CharacterController {
     this.armR.rotation.x = s * 0.45;
     this.body.position.y = this.moving ? Math.abs(Math.cos(this.walk)) * 0.07 : 0;
 
-    // ---- 第三人称相机（角色背后） ----
-    const camDist = 10;
-    const camHeight = 3.4;
-    const camDir = new THREE.Vector3(
-      Math.sin(this.yaw) * Math.cos(this.pitch),
-      Math.sin(this.pitch),
-      Math.cos(this.yaw) * Math.cos(this.pitch),
+    // ---- 第三人称相机：球面坐标 + 地形碰撞 ----
+    const camDist = 8;
+    const camPitch = THREE.MathUtils.clamp(this.pitch, 0.15, 1.35);
+    const localCam = new THREE.Vector3(
+      this.pos.x + Math.sin(this.yaw) * Math.cos(camPitch) * camDist,
+      this.pos.y + Math.sin(camPitch) * camDist + 2.5,
+      this.pos.z + Math.cos(this.yaw) * Math.cos(camPitch) * camDist,
     );
-    const localCam = this.pos.clone().addScaledVector(camDir, camDist).add(new THREE.Vector3(0, camHeight, 0));
+
+    // 相机不能低于地形
+    const camGround = heightAt(localCam.x, localCam.z) + 2;
+    if (localCam.y < camGround) localCam.y = camGround;
+
     const localLook = new THREE.Vector3(this.pos.x, this.pos.y + 1.7, this.pos.z);
 
     const worldCam = localCam.applyMatrix4(root.matrixWorld);
     const worldLook = localLook.applyMatrix4(root.matrixWorld);
 
-    // 平滑跟随
-    camera.position.lerp(worldCam, 1 - Math.pow(0.001, dt));
+    // 平滑跟随（有缓冲感）
+    camera.position.lerp(worldCam, 1 - Math.pow(0.005, dt));
     camera.lookAt(worldLook);
 
     // 着陆入场动画：从高空机位缓缓降到角色背后
