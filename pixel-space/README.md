@@ -1,7 +1,6 @@
-# 像素太空 · 第三人称太空探索原型
+# 像素太空 · Pixel Space
 
-Three.js + Vite + TypeScript 技术原型 v0.2：第三人称 6DOF 太空飞行战斗 + 程序化星球
-降落 + 地表探索的垂直切片。不含外部美术/音频资源，全部程序化生成（噪声、Canvas 贴图、WebAudio）。
+Three.js + Vite + TypeScript 技术原型 v0.3：第三人称 6DOF 太空飞行战斗 + 程序化星球降落 + 地表探索的垂直切片。不含外部美术/音频资源，全部程序化生成（噪声、Canvas 贴图、WebAudio）。
 
 ## 玩法闭环
 

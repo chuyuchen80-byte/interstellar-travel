@@ -1,7 +1,7 @@
 {
-  "name": "space-shooter-proto",
+  "name": "pixel-space",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "像素太空 6DOF 飞行射击技术原型 (Three.js + Vite + TypeScript)",
   "scripts": {
