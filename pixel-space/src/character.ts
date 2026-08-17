@@ -122,7 +122,7 @@ export class CharacterController {
     // 鼠标视角 — 只控制相机，不直接旋转角色
     const { dx, dy } = ctrl.consumeMouse();
     this.yaw -= dx * 0.0024;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * 0.0024, 0.1, 1.45);
+    this.pitch = THREE.MathUtils.clamp(this.pitch + dy * 0.0024, 0.1, 1.45);
 
     // ---- 移动方向：WASD 相对于相机水平朝向（yaw） ----
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));

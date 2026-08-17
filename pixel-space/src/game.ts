@@ -4,9 +4,10 @@ import { FlightController } from './flight';
 import { BulletPool, Debris, Enemy, makeAsteroid, makeDrone, makePlayerShip } from './entities';
 import { makeCloudSprite, makeStarfield, PixelPipeline, STYLES } from './fx';
 import { addSaturnRings, createAsteroidBelt, createMoon, createPlanet, createSun, Planet, PlanetStyle } from './planet';
-import { createTerrain, createVegetation, SurfaceTerrain, TerrainStyle } from './terrain';
+import { TerrainStyle, createTerrain, createVegetation } from './terrain';
 import { CharacterController } from './character';
 import { Sfx } from './sfx';
+import { VoxelWorld, BlockType } from './voxel';
 
 interface Crystal {
   mesh: THREE.Mesh;
@@ -15,14 +16,14 @@ interface Crystal {
 
 interface SurfaceWorld {
   root: THREE.Group;
-  terrain: SurfaceTerrain;
-  water: THREE.Mesh;
+  world: VoxelWorld;
   character: CharacterController;
   ship: THREE.Group;
   shipLocal: THREE.Vector3;
   crystals: Crystal[];
   collect: number;
   enterTime: number;
+  castRays: boolean; // 是否已初始化射线检测
 }
 
 interface Orbital {
@@ -410,23 +411,25 @@ export class Game {
     root.updateMatrixWorld(true);
 
     // ��行星不同地形风格 + 天空色
-    const terrain = createTerrain(520, 180, this.target.seed, this.target.waterLevel, this.target.terrainStyle);
-    root.add(terrain.mesh, terrain.water);
-    const vegetation = createVegetation(terrain, this.target.seed + Math.floor(Math.random() * 1000), 80);
-    root.add(vegetation);
+    // 体素世界：1x1x1 方块，程序化生成
+    const world = new VoxelWorld(this.target.seed);
+    world.generate();
+    root.add(world.group);
 
+    // 角色（站在体素地表上）
     const character = new CharacterController();
-    character.pos.set(0, terrain.heightAt(0, 0) + 4, 0);
+    const spawnH = world.getHeightAt(64, 64) + 4;
+    character.pos.set(64, spawnH, 64);
     root.add(character.group);
 
-    // �����的��船
+    // 飞船
     const ship = makePlayerShip();
-    const shipX = 8;
-    ship.position.set(shipX, terrain.heightAt(shipX, 0) + 1.6, 0);
+    const shipX = 72;
+    ship.position.set(shipX, world.getHeightAt(shipX, 64) + 1.6, 64);
     ship.rotation.set(0.08, -0.7, 0.12);
     root.add(ship);
 
-    // 可收集水��
+    // 可收集水晶
     const crystals: Crystal[] = [];
     const crystalMat = new THREE.MeshStandardMaterial({
       color: 0x7df9ff,
@@ -435,9 +438,9 @@ export class Game {
       roughness: 0.2,
     });
     for (let i = 0; i < 12; i++) {
-      const x = (Math.random() * 2 - 1) * 210;
-      const z = (Math.random() * 2 - 1) * 210;
-      const y = terrain.heightAt(x, z) + 1.4;
+      const x = 32 + Math.random() * 64;
+      const z = 32 + Math.random() * 64;
+      const y = world.getHeightAt(x, z) + 1.4;
       const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), crystalMat);
       mesh.position.set(x, y, z);
       mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
@@ -448,14 +451,14 @@ export class Game {
 
     this.surface = {
       root,
-      terrain,
-      water: terrain.water,
+      world,
       character,
       ship,
       shipLocal: ship.position.clone(),
       crystals,
       collect: 0,
       enterTime: 0,
+      castRays: false,
     };
     // 天空色按行星
     this.applySurfaceSky(this.target.terrainStyle);
@@ -708,15 +711,10 @@ export class Game {
         const s = this.surface!;
         s.enterTime += dt;
         if (this.controls.locked) {
-          s.character.update(dt, this.controls, s.terrain.heightAt, s.root, this.camera, s.enterTime);
+          s.character.update(dt, this.controls, s.world.getHeightAt, s.root, this.camera, s.enterTime);
           this.updateCollect(s);
         }
         // 水面呼吸波动
-        if (s.water.visible) {
-          (s.water.material as any).opacity = 0.72 + Math.sin(s.enterTime * 1.8) * 0.05;
-        }
-        this.updateShipReturnPrompt(s);
-        this.pipeline.render(this.surfaceScene, this.camera);
         break;
       }
 
