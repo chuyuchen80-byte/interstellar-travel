@@ -697,10 +697,18 @@ export class Game {
           this.state = 'landing';
           this.pendingScene = this.spaceScene;
           this.setFade(true, `着陆 ${this.target!.name} 中…`);
+          console.log('[Landing] Starting landing sequence for', this.target!.name);
           window.setTimeout(() => {
-            this.enterSurface();
-            this.state = 'surface';
-            this.setFade(false);
+            console.log('[Landing] Timeout fired, calling enterSurface...');
+            try {
+              this.enterSurface();
+              this.state = 'surface';
+              this.setFade(false);
+              console.log('[Landing] enterSurface completed, state = surface');
+            } catch (e) {
+              console.error('[Landing] enterSurface failed:', e);
+              this.setFade(false);
+            }
           }, 900);
         }
         this.pipeline.render(this.spaceScene, this.camera);
