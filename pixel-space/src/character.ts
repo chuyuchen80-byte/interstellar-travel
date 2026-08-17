@@ -122,7 +122,7 @@ export class CharacterController {
     // 鼠标视角 — 只控制相机，不直接旋转角色
     const { dx, dy } = ctrl.consumeMouse();
     this.yaw -= dx * 0.0024;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * 0.0024, 0.15, 1.35);
+    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * 0.0024, 0.1, 1.45);
 
     // ---- 移动方向：WASD 相对于相机水平朝向（yaw） ----
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
@@ -159,7 +159,8 @@ export class CharacterController {
 
     // ---- 角色朝向：平滑旋转到移动方向（Minecraft 风格） ----
     if (hasInput) {
-      const moveYaw = Math.atan2(want.x, want.z);
+      // 模型正面朝 -Z，朝向向量 = (-sinθ, -cosθ)，因此面朝移动方向需取 atan2(-wx, -wz)
+      const moveYaw = Math.atan2(-want.x, -want.z);
       let diff = moveYaw - this.group.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
@@ -179,7 +180,7 @@ export class CharacterController {
 
     // ---- 第三人称相机：球面坐标 + 地形碰撞 ----
     const camDist = 8;
-    const camPitch = THREE.MathUtils.clamp(this.pitch, 0.15, 1.35);
+    const camPitch = THREE.MathUtils.clamp(this.pitch, 0.1, 1.45);
     const localCam = new THREE.Vector3(
       this.pos.x + Math.sin(this.yaw) * Math.cos(camPitch) * camDist,
       this.pos.y + Math.sin(camPitch) * camDist + 2.5,
