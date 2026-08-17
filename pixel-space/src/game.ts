@@ -418,14 +418,14 @@ export class Game {
 
     // 角色（站在体素地表上）
     const character = new CharacterController();
-    const spawnH = world.getHeightAt(64, 64) + 4;
-    character.pos.set(64, spawnH, 64);
+    const spawnH = world.getHeightAt(32, 32) + 4;
+    character.pos.set(32, spawnH, 32);
     root.add(character.group);
 
     // 飞船
     const ship = makePlayerShip();
-    const shipX = 72;
-    ship.position.set(shipX, world.getHeightAt(shipX, 64) + 1.6, 64);
+    const shipX = 40;
+    ship.position.set(shipX, world.getHeightAt(shipX, 32) + 1.6, 32);
     ship.rotation.set(0.08, -0.7, 0.12);
     root.add(ship);
 
@@ -438,8 +438,8 @@ export class Game {
       roughness: 0.2,
     });
     for (let i = 0; i < 12; i++) {
-      const x = 32 + Math.random() * 64;
-      const z = 32 + Math.random() * 64;
+      const x = 16 + Math.random() * 32;
+      const z = 16 + Math.random() * 32;
       const y = world.getHeightAt(x, z) + 1.4;
       const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), crystalMat);
       mesh.position.set(x, y, z);

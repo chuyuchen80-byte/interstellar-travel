@@ -4,9 +4,9 @@ import { fbm2 } from '../noise';
 import { Chunk } from './chunk';
 
 // 世界配置
-const WORLD_WIDTH = 128;   // x 方向方块数（8个区块）
-const WORLD_DEPTH = 128;   // z 方向方块数（8个区块）
-const WORLD_HEIGHT = 32;   // y 方向方块数
+const WORLD_WIDTH = 64;   // x 方向方块数（4个区块）
+const WORLD_DEPTH = 64;   // z 方向方块数（4个区块）
+const WORLD_HEIGHT = 24;  // y 方向方块数
 
 const CHUNK_SIZE = 16;     // 每个区块边长（方块数）
 
