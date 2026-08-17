@@ -67,7 +67,7 @@ export class Game {
   private state: GameState = 'menu';
   private pendingScene: THREE.Scene = this.spaceScene;
   private surface: SurfaceWorld | null = null;
-  private flyby: { root: THREE.Group; target: Orbital; enterTime: number } | null = null;
+  private flyby: { root: THREE.Group; target: Orbital; enterTime: number; maturity: number; fadeMats: any[] } | null = null;
   private descentTarget: Orbital | null = null; // 降落目标锁定，防止转场期间切换
 
   private styleIdx = 0;
