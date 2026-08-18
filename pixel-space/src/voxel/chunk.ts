@@ -3,7 +3,7 @@ import { BlockType, BLOCKS } from './block';
 
 // 区块尺寸
 const CHUNK_W = 16;
-const CHUNK_H = 32;
+const CHUNK_H = 256;  // Minecraft 风格：Y 0-255
 const CHUNK_D = 16;
 
 // 6个面的方向向量
@@ -40,7 +40,8 @@ export class Chunk {
   readonly cx: number;
   readonly cz: number;
   readonly data: Uint8Array;
-  mesh: THREE.Mesh | null = null;
+  mesh: THREE.Mesh | null = null;       // 实体方块网格
+  waterMesh: THREE.Mesh | null = null;  // 水网格（透明）
   dirty = true;
 
   // 世界坐标偏移（每个方块 = 1 单位）
@@ -112,11 +113,19 @@ export class Chunk {
     if (!this.dirty) return;
     this.dirty = false;
 
-    const positions: number[] = [];
-    const colors: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
-    let vertCount = 0;
+    // 实体方块数据
+    const solidPositions: number[] = [];
+    const solidColors: number[] = [];
+    const solidUvs: number[] = [];
+    const solidIndices: number[] = [];
+    let solidVertCount = 0;
+
+    // 水方块数据（透明）
+    const waterPositions: number[] = [];
+    const waterColors: number[] = [];
+    const waterUvs: number[] = [];
+    const waterIndices: number[] = [];
+    let waterVertCount = 0;
 
     for (let y = 0; y < CHUNK_H; y++) {
       for (let z = 0; z < CHUNK_D; z++) {
@@ -125,44 +134,70 @@ export class Chunk {
           if (blockType === BlockType.AIR) continue;
 
           const def = BLOCKS[blockType];
-          if (!def || !def.solid) continue;
+          if (!def) continue;
+
+          const isWater = blockType === BlockType.WATER;
+          const isTransparent = def.transparent;
+          const isSolid = def.solid;
 
           // 检查6个面
           for (let fi = 0; fi < 6; fi++) {
             const [dx, dy, dz] = FACES[fi];
             const neighborType = this.getNeighborBlock(x, y, z, dx, dy, dz, neighborChunks);
+            const neighborDef = BLOCKS[neighborType as BlockType];
 
             // 邻居是空气或透明方块 → 生成此面
-            const neighborDef = BLOCKS[neighborType as BlockType];
-            if (neighborDef && (neighborType === BlockType.AIR || neighborDef.transparent)) {
-              // 选择颜色
-              const isTop = fi === 4;    // +Y
-              const isBottom = fi === 5; // -Y
-              const color = isTop ? def.topColor : (isBottom ? def.bottomColor : def.sideColor);
-              const r = ((color >> 16) & 0xff) / 255;
-              const g = ((color >> 8) & 0xff) / 255;
-              const b = (color & 0xff) / 255;
+            // 水比较特殊：只在邻居是空气时渲染面，不渲染水-水的面
+            const shouldRenderFace = neighborType === BlockType.AIR ||
+              (isWater && neighborDef?.transparent && neighborType !== BlockType.WATER) ||
+              (!isWater && neighborDef?.transparent);
 
-              const verts = VERTICES[fi];
-              // 每面4个顶点，每个顶点3个坐标
-              for (let vi = 0; vi < 12; vi += 3) {
-                positions.push(
-                  x + verts[vi] + 0.5,     // 转换到方块中心对齐
-                  y + verts[vi + 1] + 0.5,
-                  z + verts[vi + 2] + 0.5,
-                );
-                colors.push(r, g, b);
+            if (!shouldRenderFace) continue;
+
+            // 选择颜色
+            const isTop = fi === 4;    // +Y
+            const isBottom = fi === 5; // -Y
+            const color = isTop ? def.topColor : (isBottom ? def.bottomColor : def.sideColor);
+            const r = ((color >> 16) & 0xff) / 255;
+            const g = ((color >> 8) & 0xff) / 255;
+            const b = (color & 0xff) / 255;
+
+            const verts = VERTICES[fi];
+            // 每面4个顶点，每个顶点3个坐标
+            for (let vi = 0; vi < 12; vi += 3) {
+              const vx = x + verts[vi] + 0.5;
+              const vy = y + verts[vi + 1] + 0.5;
+              const vz = z + verts[vi + 2] + 0.5;
+
+              if (isWater) {
+                waterPositions.push(vx, vy, vz);
+                waterColors.push(r, g, b);
+              } else {
+                solidPositions.push(vx, vy, vz);
+                solidColors.push(r, g, b);
               }
-              // UV
-              for (let ui = 0; ui < 8; ui += 2) {
-                uvs.push(UVS[ui], UVS[ui + 1]);
+            }
+            // UV
+            for (let ui = 0; ui < 8; ui += 2) {
+              if (isWater) {
+                waterUvs.push(UVS[ui], UVS[ui + 1]);
+              } else {
+                solidUvs.push(UVS[ui], UVS[ui + 1]);
               }
-              // 索引（两个三角形）
-              indices.push(
-                vertCount, vertCount + 1, vertCount + 2,
-                vertCount, vertCount + 2, vertCount + 3,
+            }
+            // 索引（两个三角形）
+            if (isWater) {
+              waterIndices.push(
+                waterVertCount, waterVertCount + 1, waterVertCount + 2,
+                waterVertCount, waterVertCount + 2, waterVertCount + 3,
               );
-              vertCount += 4;
+              waterVertCount += 4;
+            } else {
+              solidIndices.push(
+                solidVertCount, solidVertCount + 1, solidVertCount + 2,
+                solidVertCount, solidVertCount + 2, solidVertCount + 3,
+              );
+              solidVertCount += 4;
             }
           }
         }
@@ -173,30 +208,68 @@ export class Chunk {
     if (this.mesh) {
       this.mesh.geometry.dispose();
       (this.mesh.material as THREE.Material).dispose();
-    }
-
-    if (vertCount === 0) {
       this.mesh = null;
-      return;
+    }
+    if (this.waterMesh) {
+      this.waterMesh.geometry.dispose();
+      (this.waterMesh.material as THREE.Material).dispose();
+      this.waterMesh = null;
     }
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
+    // 创建实体方块网格
+    if (solidVertCount > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(solidPositions, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(solidColors, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(solidUvs, 2));
+      geo.setIndex(solidIndices);
+      geo.computeVertexNormals();
 
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.8,
-      flatShading: false,
-    });
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.8,
+        flatShading: false,
+      });
 
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.position.set(this.ox, 0, this.oz);
-    this.mesh.frustumCulled = true;
-    this.mesh.name = `chunk_${this.cx}_${this.cz}`;
+      this.mesh = new THREE.Mesh(geo, mat);
+      this.mesh.position.set(this.ox, 0, this.oz);
+      this.mesh.frustumCulled = true;
+      this.mesh.name = `chunk_${this.cx}_${this.cz}_solid`;
+    }
+
+    // 创建水网格（透明）
+    if (waterVertCount > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(waterPositions, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(waterColors, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(waterUvs, 2));
+      geo.setIndex(waterIndices);
+      geo.computeVertexNormals();
+
+      const mat = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.1,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false, // 透明物体不写入深度缓冲，避免遮挡问题
+        side: THREE.DoubleSide,
+      });
+
+      this.waterMesh = new THREE.Mesh(geo, mat);
+      this.waterMesh.position.set(this.ox, 0, this.oz);
+      this.waterMesh.frustumCulled = true;
+      this.waterMesh.name = `chunk_${this.cx}_${this.cz}_water`;
+      this.waterMesh.renderOrder = 1; // 在实体方块之后渲染
+    }
+  }
+
+  /** 获取所有 Mesh（用于添加到场景） */
+  getMeshes(): THREE.Mesh[] {
+    const meshes: THREE.Mesh[] = [];
+    if (this.mesh) meshes.push(this.mesh);
+    if (this.waterMesh) meshes.push(this.waterMesh);
+    return meshes;
   }
 
   /** 销毁网格 */
@@ -205,6 +278,11 @@ export class Chunk {
       this.mesh.geometry.dispose();
       (this.mesh.material as THREE.Material).dispose();
       this.mesh = null;
+    }
+    if (this.waterMesh) {
+      this.waterMesh.geometry.dispose();
+      (this.waterMesh.material as THREE.Material).dispose();
+      this.waterMesh = null;
     }
   }
 }

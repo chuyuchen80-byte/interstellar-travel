@@ -7,7 +7,7 @@ import { addSaturnRings, createAsteroidBelt, createMoon, createPlanet, createSun
 import { TerrainStyle, createTerrain, createVegetation } from './terrain';
 import { CharacterController } from './character';
 import { Sfx } from './sfx';
-import { VoxelWorld, BlockType } from './voxel';
+import { ChunkManager, BlockType } from './voxel';
 
 interface Crystal {
   mesh: THREE.Mesh;
@@ -16,7 +16,7 @@ interface Crystal {
 
 interface SurfaceWorld {
   root: THREE.Group;
-  world: VoxelWorld;
+  world: ChunkManager;
   character: CharacterController;
   ship: THREE.Group;
   shipLocal: THREE.Vector3;
@@ -38,7 +38,7 @@ interface Orbital {
   moon?: { pivot: THREE.Object3D; moon: THREE.Group; speed: number; radius: number };
 }
 
-type GameState = 'menu' | 'space' | 'flyby' | 'descent' | 'landing' | 'surface' | 'over';
+type GameState = 'menu' | 'space' | 'flyby' | 'descent' | 'landing' | 'surface' | 'takeoff' | 'over';
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -70,6 +70,14 @@ export class Game {
   private surface: SurfaceWorld | null = null;
   private flyby: { root: THREE.Group; target: Orbital; enterTime: number; maturity: number; fadeMats: any[] } | null = null;
   private descentTarget: Orbital | null = null; // 降落目标锁定，防止转场期间切换
+  private descentDir: THREE.Vector3 | null = null; // 锁定的降落方向（径向向内）
+  private descentSurfacePoint: THREE.Vector3 | null = null; // 锁定的表面落点
+  private pendingWorld: ChunkManager | null = null; // 正在生成的体素世界（降落期间异步构建）
+
+  private takeoffCharge = 0;
+  private isChargingTakeoff = false;
+  private takeoffStartTime = 0;
+  private takeoffPlanet: Orbital | null = null; // 起飞的行星（用于返回时定位）
 
   private styleIdx = 0;
   private billboard = false;
@@ -151,6 +159,7 @@ export class Game {
 
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('keyup', (e) => this.onKeyUp(e));
     document.getElementById('startBtn')!.addEventListener('click', () => this.controls.lock());
 
     this.resize();
@@ -263,8 +272,15 @@ export class Game {
       this.sfx.ensure();
       if (this.state === 'menu') this.beginRun();
     } else {
-      menu.classList.remove('hidden'); // Esc ���停
-      if (this.state === 'descent') this.state = 'space'; // 取消下降
+      menu.classList.remove('hidden'); // Esc 暂停
+      if (this.state === 'descent') {
+        this.state = 'space';
+        // 清理正在生成的体素世界
+        this.pendingWorld = null;
+        this.descentTarget = null;
+        this.descentDir = null;
+        this.descentSurfacePoint = null;
+      }
     }
   }
 
@@ -281,6 +297,24 @@ export class Game {
       } else if (this.state === 'surface' && this.surface) {
         const s = this.surface;
         if (s.character.pos.distanceTo(s.shipLocal) < 9) this.beginReturn();
+      }
+    }
+    // 起飞充能：按住 Space
+    if (e.code === 'Space' && this.state === 'surface' && this.surface) {
+      if (!this.isChargingTakeoff) {
+        this.isChargingTakeoff = true;
+        this.takeoffStartTime = performance.now();
+      }
+    }
+  }
+
+  private onKeyUp(e: KeyboardEvent) {
+    // 释放 Space 触发起飞
+    if (e.code === 'Space' && this.state === 'surface' && this.isChargingTakeoff) {
+      this.isChargingTakeoff = false;
+      const chargeTime = performance.now() - this.takeoffStartTime;
+      if (chargeTime > 500) { // 最小充能 500ms
+        this.beginTakeoff();
       }
     }
   }
@@ -330,6 +364,11 @@ export class Game {
       this.spaceScene.remove(this.flyby.root);
       this.flyby = null;
     }
+    // 离开低空巡航时清理可能残留的体素世界生成
+    this.pendingWorld = null;
+    this.descentTarget = null;
+    this.descentDir = null;
+    this.descentSurfacePoint = null;
   }
 
   private updateFlames() {
@@ -346,28 +385,143 @@ export class Game {
   }
 
   private beginRun() {
-    this.state = 'space';
+    this.state = 'surface';  // 直接开始在地球表面
     this.score = 0;
     this.health = 100;
     this.wave = 1;
     this.leaveFlyby();
     this.flight.reset();
-    this.player.position.set(0, 0, -600); // 出生在太阳与地球之间
-    this.camera.position.set(0, 4, 16);
+
+    // 找到地球
+    const earth = this.orbitals.find(o => o.name === '地球');
+    if (earth) {
+      // 生成地球的无限体素世界
+      this.pendingWorld = new ChunkManager(earth.seed);
+      // 在地球表面的一个合适位置生成
+      const spawnX = 0;
+      const spawnZ = 0;
+      this.pendingWorld.updatePlayerPosition(spawnX, spawnZ);
+      this.pendingWorld.buildMeshesAsync().then(() => {
+        // 初始化地表场景
+        this.enterSurfaceFromSpace(earth, spawnX, spawnZ);
+      }).catch((err: unknown) => {
+        console.error('[Start] Failed to build Earth voxel world:', err);
+      });
+    }
+
     this.enemies.forEach((en) => this.spaceScene.remove(en.obj));
     this.enemies = [];
     this.bullets.clear();
     this.enemyBullets.clear();
     this.debris.clear();
-    this.spawnWave();
     document.getElementById('over')!.classList.add('hidden');
+  }
+
+  /** 从太空进入地表场景（用于开始游戏和返回地球） */
+  private async enterSurfaceFromSpace(planet: Orbital, spawnX: number, spawnZ: number) {
+    if (!this.pendingWorld) return;
+
+    // 平面世界朝上
+    const up = new THREE.Vector3(0, 1, 0);
+    const fwd = new THREE.Vector3(0, 0, -1);
+    const right = new THREE.Vector3(1, 0, 0);
+
+    const root = new THREE.Group();
+    // Root 位于生成点（世界坐标）
+    root.position.set(spawnX, 0, spawnZ);
+    root.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
+    this.surfaceScene.add(root);
+    root.updateMatrixWorld(true);
+
+    const world = this.pendingWorld;
+    root.add(world.group);
+
+    const character = new CharacterController();
+    const spawnH = world.getHeightAt(spawnX, spawnZ) + 4;
+    // 角色位置用 LOCAL 坐标（相对于 root），root 已在 (spawnX, 0, spawnZ)
+    character.pos.set(0, spawnH, 0);
+    root.add(character.group);
+
+    // 飞船在角色附近（local 坐标）
+    const ship = makePlayerShip();
+    const shipX = 20;
+    const shipZ = 0;
+    ship.position.set(shipX, world.getHeightAt(spawnX + shipX, spawnZ + shipZ) + 1.6, shipZ);
+    ship.rotation.set(0.08, -0.7, 0.12);
+    root.add(ship);
+
+    const crystals: Crystal[] = [];
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: 0x7df9ff,
+      emissive: 0x1b6d78,
+      emissiveIntensity: 0.8,
+      roughness: 0.2,
+    });
+    for (let i = 0; i < 12; i++) {
+      const x = -10 + Math.random() * 20;
+      const z = -10 + Math.random() * 20;
+      const y = world.getHeightAt(spawnX + x, spawnZ + z) + 1.4;
+      const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), crystalMat);
+      // Local 坐标
+      mesh.position.set(x, y, z);
+      mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+      mesh.castShadow = true;
+      root.add(mesh);
+      // 存储 local 坐标用于拾取判定
+      crystals.push({ mesh, pos: mesh.position.clone() });
+    }
+
+    this.surface = {
+      root,
+      world,
+      character,
+      ship,
+      shipLocal: ship.position.clone(),
+      crystals,
+      collect: 0,
+      enterTime: 0,
+      castRays: false,
+    };
+    this.applySurfaceSky('earth');
+    document.getElementById('collectWrap')!.classList.remove('hidden');
+    document.getElementById('surfaceHelp')!.classList.remove('hidden');
+    document.getElementById('landPrompt')!.classList.add('hidden');
+    document.getElementById('collectVal')!.textContent = `0/${crystals.length}`;
+
+    this.pendingWorld = null;
+    this.descentTarget = null;
+    this.descentDir = null;
+    this.descentSurfacePoint = null;
   }
 
   // ---------- 降落 / 返回 ----------
 
   private beginDescent() {
     this.leaveFlyby();
+    this.descentTarget = this.target; // 锁定降落目标
+
+    // 计算并锁定降落方向和表面点，避免后续 player 位置变化导致方向反转
+    if (this.descentTarget) {
+      const dir = this.player.position.clone().sub(this.descentTarget.center).normalize();
+      this.descentDir = dir.clone();
+      this.descentSurfacePoint = this.descentTarget.center.clone().addScaledVector(dir, this.descentTarget.planet.radius);
+    }
+
     this.state = 'descent';
+
+    // 开始异步生成体素世界（在降落过程中并行构建网格）
+    if (this.descentTarget && this.descentSurfacePoint) {
+      // 使用锁定的表面点作为生成中心，而不是当前玩家位置
+      const surfaceX = this.descentSurfacePoint.x;
+      const surfaceZ = this.descentSurfacePoint.z;
+      this.pendingWorld = new ChunkManager(this.descentTarget.seed);
+      // 同步生成初始区块数据
+      this.pendingWorld.updatePlayerPosition(surfaceX, surfaceZ);
+      // 异步构建网格
+      this.pendingWorld.buildMeshesAsync().catch((err: unknown) => {
+        console.error('[Landing] Failed to build voxel world meshes:', err);
+      });
+    }
   }
 
   private beginReturn() {
@@ -379,6 +533,52 @@ export class Game {
       this.state = 'space';
       this.setFade(false);
     }, 600);
+  }
+
+  /** 开始起飞序列 */
+  private beginTakeoff() {
+    if (!this.surface) return;
+
+    this.state = 'takeoff';
+    // 记录起飞的行星（用于返回时定位）
+    // 如果是地球（开始游戏时），descentTarget 可能为空，需要从 orbitals 找地球
+    this.takeoffPlanet = this.descentTarget || this.orbitals.find(o => o.name === '地球') || null;
+
+    // 显示起飞提示
+    this.setFade(true, '起飞中...');
+
+    // 起飞动画：2秒后过渡到太空
+    window.setTimeout(() => {
+      this.performTakeoff();
+    }, 2000);
+  }
+
+  /** 执行起飞过渡 */
+  private performTakeoff() {
+    if (!this.surface || !this.takeoffPlanet) return;
+
+    const planet = this.takeoffPlanet;
+    // 保存起飞前的表面位置（用于计算方向）
+    const surfacePos = new THREE.Vector3();
+    this.surface.root.getWorldPosition(surfacePos);
+
+    // 清理地表场景
+    this.surfaceScene.remove(this.surface.root);
+    // 保留 world（地球的无限世界持久化）
+    this.surface = null;
+
+    // 过渡到太空状态
+    this.state = 'space';
+    this.setFade(false);
+
+    // 计算从行星中心指向起飞点的方向
+    const dir = surfacePos.clone().sub(planet.center).normalize();
+    // 在行星上方一定距离生成
+    this.player.position.copy(planet.center).addScaledVector(dir, planet.planet.radius + 200);
+    this.camera.position.copy(this.player.position).add(new THREE.Vector3(0, 4, 16));
+    this.flight.reset();
+
+    this.takeoffPlanet = null;
   }
 
   private setFade(on: boolean, msg?: string) {
@@ -393,10 +593,12 @@ export class Game {
   }
 
   private enterSurface() {
-    if (!this.target) return;
-    // 以目标星球表面切平面为本地坐标系（本地 +Y = 星球径向）
-    const dir = this.player.position.clone().sub(this.target.center).normalize();
-    const surfacePoint = this.target.center.clone().addScaledVector(dir, this.target.planet.radius);
+    // 使用降落期间锁定的目标和预生成的体素世界
+    if (!this.descentTarget || !this.pendingWorld || !this.descentDir || !this.descentSurfacePoint) return;
+
+    // 使用锁定的降落方向和表面点，避免 player 位置变化导致方向反转
+    const dir = this.descentDir;
+    const surfacePoint = this.descentSurfacePoint;
 
     const up = dir.clone();
     const fwd = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
@@ -410,22 +612,26 @@ export class Game {
     this.surfaceScene.add(root);
     root.updateMatrixWorld(true);
 
-    // ��行星不同地形风格 + 天空色
-    // 体素世界：1x1x1 方块，程序化生成
-    const world = new VoxelWorld(this.target.seed);
-    world.generate();
+    // 使用预生成的体素世界
+    const world = this.pendingWorld;
     root.add(world.group);
 
     // 角色（站在体素地表上）
     const character = new CharacterController();
-    const spawnH = world.getHeightAt(32, 32) + 4;
-    character.pos.set(32, spawnH, 32);
+    // 找到玩家所在区块附近的合适生成高度
+    // 这里需要用 WORLD 坐标查询高度，然后转换为 local 坐标
+    const chunkX = Math.floor(surfacePoint.x / 16) * 16 + 8;
+    const chunkZ = Math.floor(surfacePoint.z / 16) * 16 + 8;
+    const spawnH = world.getHeightAt(chunkX, chunkZ) + 4;
+    // Local 坐标：相对于 root (surfacePoint)
+    character.pos.set(chunkX - surfacePoint.x, spawnH, chunkZ - surfacePoint.z);
     root.add(character.group);
 
     // 飞船
     const ship = makePlayerShip();
-    const shipX = 40;
-    ship.position.set(shipX, world.getHeightAt(shipX, 32) + 1.6, 32);
+    const shipX = chunkX + 20;
+    const shipZ = chunkZ;
+    ship.position.set(shipX - surfacePoint.x, world.getHeightAt(shipX, shipZ) + 1.6, shipZ - surfacePoint.z);
     ship.rotation.set(0.08, -0.7, 0.12);
     root.add(ship);
 
@@ -438,14 +644,16 @@ export class Game {
       roughness: 0.2,
     });
     for (let i = 0; i < 12; i++) {
-      const x = 16 + Math.random() * 32;
-      const z = 16 + Math.random() * 32;
+      const x = chunkX - 10 + Math.random() * 20;
+      const z = chunkZ - 10 + Math.random() * 20;
       const y = world.getHeightAt(x, z) + 1.4;
       const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), crystalMat);
-      mesh.position.set(x, y, z);
+      // Local 坐标
+      mesh.position.set(x - surfacePoint.x, y, z - surfacePoint.z);
       mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       mesh.castShadow = true;
       root.add(mesh);
+      // 存储 local 坐标用于拾取判定
       crystals.push({ mesh, pos: mesh.position.clone() });
     }
 
@@ -461,11 +669,14 @@ export class Game {
       castRays: false,
     };
     // 天空色按行星
-    this.applySurfaceSky(this.target.terrainStyle);
+    this.applySurfaceSky(this.descentTarget.terrainStyle);
     document.getElementById('collectWrap')!.classList.remove('hidden');
     document.getElementById('surfaceHelp')!.classList.remove('hidden');
     document.getElementById('landPrompt')!.classList.add('hidden');
     document.getElementById('collectVal')!.textContent = `0/${crystals.length}`;
+
+    // 清理 pendingWorld
+    this.pendingWorld = null;
   }
 
   private applySurfaceSky(style: TerrainStyle) {
@@ -485,14 +696,29 @@ export class Game {
   private leaveSurface() {
     if (this.surface) {
       this.surfaceScene.remove(this.surface.root);
+      // 注意：如果是地球（无限世界），不 dispose world，保持持久化
+      // 只有其他行星（有限世界）才 dispose
+      // 检查是否是地球：优先看 takeoffPlanet（起飞时设置），其次看 descentTarget
+      const planet = this.takeoffPlanet || this.descentTarget;
+      const isEarth = planet?.name === '地球';
+      if (!isEarth) {
+        this.surface.world.dispose(); // 清理体素世界资源
+      }
       this.surface = null;
     }
-    // ���复地球天空
+    // 恢复地球天空
     this.surfaceScene.background = new THREE.Color(0x87b7e8);
     this.surfaceScene.fog = new THREE.Fog(0x87b7e8, 90, 460);
     document.getElementById('collectWrap')!.classList.add('hidden');
     document.getElementById('surfaceHelp')!.classList.add('hidden');
     document.getElementById('shipPrompt')!.classList.add('hidden');
+    // 清理残留
+    this.pendingWorld = null;
+    this.descentTarget = null;
+    this.descentDir = null;
+    this.descentSurfacePoint = null;
+    this.takeoffPlanet = null;
+    this.updateTakeoffChargeUI(0);
   }
 
   // ---------- ��次生成（��开所有行星） ----------
@@ -647,14 +873,16 @@ export class Game {
       }
 
       case 'descent': {
-        if (!this.target) { this.state = 'space'; break; }
-        const dir = this.player.position.clone().sub(this.target.center).normalize();
-        const distToSurface = this.player.position.distanceTo(this.target.center) - this.target.planet.radius;
-        const target = this.target.center.clone().addScaledVector(dir, this.target.planet.radius + 4);
+        if (!this.descentTarget || !this.descentDir || !this.descentSurfacePoint) { this.state = 'space'; break; }
+        // 使用锁定的降落方向，避免 player 位置变化导致方向反转
+        const dir = this.descentDir;
+        const surfacePoint = this.descentSurfacePoint;
+        const distToSurface = this.player.position.distanceTo(this.descentTarget.center) - this.descentTarget.planet.radius;
+        const target = this.descentTarget.center.clone().addScaledVector(dir, this.descentTarget.planet.radius + 4);
         const toTarget = target.clone().sub(this.player.position);
         const dist = toTarget.length();
 
-        // 速度曲线：高空���� → 中空��速 → 近地��降
+        // 速度曲线：高空快速 → 中空匀速 → 近地慢降
         let speed: number;
         if (distToSurface > 260) speed = Math.min(dist * 3, 110);
         else if (distToSurface > 60) speed = 55 + distToSurface * 0.35;
@@ -662,18 +890,18 @@ export class Game {
         this.player.position.addScaledVector(toTarget.normalize(), speed * dt);
         this.flight.vel.set(0, 0, 0);
 
-        // ��态：高空 34° ����，近地拉平到 14°
+        // 姿态：高空 34° 俯冲，近地拉平到 14°
         const dive = THREE.MathUtils.lerp(
           0.24,
           0.6,
           THREE.MathUtils.clamp((distToSurface - 60) / 300, 0, 1),
         );
-        const inward = this.target.center.clone().sub(this.player.position).normalize();
+        const inward = this.descentTarget.center.clone().sub(this.player.position).normalize();
         const qDown = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), inward);
         const qTilt = new THREE.Quaternion().setFromAxisAngle(dir, -dive);
         this.player.quaternion.slerp(qTilt.clone().multiply(qDown), Math.min(1, dt * 2.2));
 
-        // 相机：高空��上方��视 → 近地背后��随
+        // 相机：高空正上方俯视 → 近地背后跟随
         const above = this.player.position.clone().addScaledVector(inward, -26).add(new THREE.Vector3(0, 14, 0));
         const behind = this.player.position.clone().addScaledVector(inward, -11).add(new THREE.Vector3(0, 6, 0));
         const k = THREE.MathUtils.clamp((distToSurface - 90) / 260, 0, 1);
@@ -694,22 +922,34 @@ export class Game {
         this.updateSolarSystem(dt);
 
         if (dist < 12) {
-          this.state = 'landing';
-          this.pendingScene = this.spaceScene;
-          this.setFade(true, `着陆 ${this.target!.name} 中…`);
-          console.log('[Landing] Starting landing sequence for', this.target!.name);
-          window.setTimeout(() => {
-            console.log('[Landing] Timeout fired, calling enterSurface...');
-            try {
-              this.enterSurface();
-              this.state = 'surface';
-              this.setFade(false);
-              console.log('[Landing] enterSurface completed, state = surface');
-            } catch (e) {
-              console.error('[Landing] enterSurface failed:', e);
-              this.setFade(false);
-            }
-          }, 900);
+          // 等待体素世界网格构建完成
+          if (this.pendingWorld && !this.pendingWorld.ready) {
+            // 显示加载进度
+            const progress = Math.round(this.pendingWorld.generateProgress * 100);
+            this.setFade(true, `着陆 ${this.descentTarget.name} 中… 生成地表 ${progress}%`);
+            // 下一帧重新检查
+          } else {
+            this.state = 'landing';
+            this.pendingScene = this.spaceScene;
+            this.setFade(true, `着陆 ${this.descentTarget.name} 中…`);
+            console.log('[Landing] Starting landing sequence for', this.descentTarget.name);
+            window.setTimeout(() => {
+              console.log('[Landing] Timeout fired, calling enterSurface...');
+              try {
+                this.enterSurface();
+                this.state = 'surface';
+                this.setFade(false);
+                console.log('[Landing] enterSurface completed, state = surface');
+              } catch (e) {
+                console.error('[Landing] enterSurface failed:', e);
+                this.setFade(false);
+                // 出错时恢复到太空状态，避免卡在 landing
+                this.state = 'space';
+                this.pendingScene = this.spaceScene;
+                this.pendingWorld = null;
+              }
+            }, 900);
+          }
         }
         this.pipeline.render(this.spaceScene, this.camera);
         break;
@@ -719,10 +959,32 @@ export class Game {
         const s = this.surface!;
         s.enterTime += dt;
         if (this.controls.locked) {
-          s.character.update(dt, this.controls, s.world.getHeightAt, s.root, this.camera, s.enterTime);
+          // world.getHeightAt 和 world.isWater 需要世界坐标，而 character.pos 是相对于 root 的局部坐标
+          const rootWorldX = s.root.position.x;
+          const rootWorldZ = s.root.position.z;
+          const heightAtWorld = (x: number, z: number) => s.world.getHeightAt(x + rootWorldX, z + rootWorldZ);
+          const isWaterAtWorld = (x: number, y: number, z: number) => s.world.isWater(x + rootWorldX, y, z + rootWorldZ);
+          s.character.update(dt, this.controls, heightAtWorld, s.root, this.camera, s.enterTime, isWaterAtWorld);
           this.updateCollect(s);
+          this.updateShipReturnPrompt(s);
         }
-        // 水面呼吸波动
+
+        // 处理起飞充能
+        if (this.isChargingTakeoff) {
+          const chargeTime = performance.now() - this.takeoffStartTime;
+          this.takeoffCharge = Math.min(1, chargeTime / 2000); // 2秒充满
+          // 显示充能进度
+          this.updateTakeoffChargeUI(this.takeoffCharge);
+        } else {
+          this.takeoffCharge = 0;
+          this.updateTakeoffChargeUI(0);
+        }
+        break;
+      }
+
+      case 'takeoff': {
+        // 起飞过渡状态，等待 performTakeoff 完成
+        this.pipeline.render(this.spaceScene, this.camera);
         break;
       }
 
@@ -865,6 +1127,15 @@ export class Game {
     const el = document.getElementById('shipPrompt')!;
     const near = s.character.pos.distanceTo(s.shipLocal) < 9;
     el.classList.toggle('hidden', !near);
+  }
+
+  /** 更新起飞充能 UI */
+  private updateTakeoffChargeUI(charge: number) {
+    const el = document.getElementById('takeoffBar')!;
+    if (!el) return;
+    el.classList.toggle('hidden', charge <= 0);
+    const fill = el.querySelector('.bar-fill') as HTMLElement | null;
+    if (fill) fill.style.width = `${Math.round(charge * 100)}%`;
   }
 
   private updateLandPrompt() {

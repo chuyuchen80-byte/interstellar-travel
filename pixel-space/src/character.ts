@@ -118,6 +118,7 @@ export class CharacterController {
     root: THREE.Object3D,
     camera: THREE.PerspectiveCamera,
     enterTime: number,
+    isWaterAt?: (x: number, y: number, z: number) => boolean,
   ) {
     // 鼠标视角 — 只控制相机，不直接旋转角色
     const { dx, dy } = ctrl.consumeMouse();
@@ -135,23 +136,60 @@ export class CharacterController {
     const hasInput = want.lengthSq() > 0;
     want.normalize().multiplyScalar(13);
 
-    this.vel.x = THREE.MathUtils.lerp(this.vel.x, want.x, Math.min(1, dt * 10));
-    this.vel.z = THREE.MathUtils.lerp(this.vel.z, want.z, Math.min(1, dt * 10));
-    this.vel.y -= 32 * dt;
+    // 检测是否在水中
+    const inWater = isWaterAt ? isWaterAt(this.pos.x, this.pos.y + 0.5, this.pos.z) : false;
+
+    if (inWater) {
+      // 游泳物理：重力减小，有浮力，阻力大
+      this.vel.x = THREE.MathUtils.lerp(this.vel.x, want.x, Math.min(1, dt * 6));
+      this.vel.z = THREE.MathUtils.lerp(this.vel.z, want.z, Math.min(1, dt * 6));
+      this.vel.y -= 8 * dt; // 减小重力
+      // 浮力：如果在水面附近向上推
+      const waterSurfaceY = this.pos.y + 0.5;
+      if (this.vel.y < 0) this.vel.y += 12 * dt; // 浮力
+      // 水阻力
+      this.vel.multiplyScalar(0.95);
+
+      // Space 键上浮
+      if (ctrl.isDown('Space')) {
+        this.vel.y = Math.max(this.vel.y, 6);
+      }
+      // C 键下潜
+      if (ctrl.isDown('KeyC')) {
+        this.vel.y = Math.min(this.vel.y, -6);
+      }
+
+      this.onGround = false;
+    } else {
+      // 普通陆地物理
+      this.vel.x = THREE.MathUtils.lerp(this.vel.x, want.x, Math.min(1, dt * 10));
+      this.vel.z = THREE.MathUtils.lerp(this.vel.z, want.z, Math.min(1, dt * 10));
+      this.vel.y -= 32 * dt;
+
+      // 地形碰撞
+      const gy = heightAt(this.pos.x, this.pos.z);
+      if (this.pos.y <= gy) {
+        this.pos.y = gy;
+        this.vel.y = 0;
+        this.onGround = true;
+      } else {
+        this.onGround = false;
+      }
+      if (ctrl.isDown('Space') && this.onGround) {
+        this.vel.y = 13;
+        this.onGround = false;
+      }
+    }
 
     this.pos.addScaledVector(this.vel, dt);
 
-    // 地形碰撞
+    // 地形碰撞（水中也需要防止穿地形底部）
     const gy = heightAt(this.pos.x, this.pos.z);
     if (this.pos.y <= gy) {
       this.pos.y = gy;
       this.vel.y = 0;
       this.onGround = true;
-    } else {
-      this.onGround = false;
-    }
-    if (ctrl.isDown('Space') && this.onGround) {
-      this.vel.y = 13;
+    } else if (!inWater) {
       this.onGround = false;
     }
 
